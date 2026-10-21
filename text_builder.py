@@ -221,7 +221,12 @@ def build_phrase_2(alleles):
     if len(alleles) != 2:
         return ""
 
-    if alleles[0]["repeat"] == alleles[1]["repeat"]:
+    # Solo con valores exactos: ">200" / ">200" no indica homocigosis
+    if (
+        alleles[0]["exact"]
+        and alleles[1]["exact"]
+        and alleles[0]["repeat"] == alleles[1]["repeat"]
+    ):
         return (
             "Mediante el Kit Amplidex FMR1 PCR, "
             "se descartó la presencia de los alelos "
@@ -234,7 +239,7 @@ def build_phrase_2(alleles):
 def build_context(data):
 
     data["REPETICIONES"] = ", ".join(
-        str(a["repeat"])
+        a["label"]
         for a in data["ALLELES"]
     )
 
