@@ -1,489 +1,167 @@
+import json
+import os
+import queue
+import re
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+
 from pathlib import Path
+
+import customtkinter as ctk
 
 from config import TEMPLATE
 from extractor import extract_data
-from text_builder import build_context
 from generator import generate_report
+from genda_ui import (
+    COLORS,
+    FolderPicker,
+    GendaApp,
+    StatusLog,
+    card,
+    font,
+    primary_button,
+    secondary_button,
+    section_label
+)
+from pdf_exporter import WordConverter
+from text_builder import build_context
 
 
-class App:
+# ============================================================
+# Settings
+# ============================================================
 
-    # =========================================================
-    # COLORES
-    # =========================================================
+def get_settings_file():
 
-    BG = "#F6F2FA"           # Fondo general
-    CARD = "#FFFFFF"         # Tarjeta
-    PRIMARY = "#8E6BBE"      # Lila principal
-    PRIMARY_DARK = "#73539F" # Lila oscuro
-    PRIMARY_LIGHT = "#EDE5F7"
-    TEXT = "#342A3D"         # Texto principal
-    TEXT_SECONDARY = "#756A7D"
-    BORDER = "#DDD3E8"
-    SUCCESS = "#6C9A7B"
+    app_data = os.getenv("LOCALAPPDATA")
 
-    def __init__(self, root):
+    if app_data:
 
-        self.root = root
-
-        self.root.title("Generador de informes FMR1")
-        self.root.geometry("720x500")
-        self.root.resizable(False, False)
-
-        self.root.configure(bg=self.BG)
-
-        self.reports_folder = None
-        self.output_folder = None
-
-        self.setup_styles()
-        self.create_widgets()
-
-    # =========================================================
-    # ESTILOS
-    # =========================================================
-
-    def setup_styles(self):
-
-        style = ttk.Style()
-
-        style.theme_use("clam")
-
-        # Entry
-        style.configure(
-            "Custom.TEntry",
-            fieldbackground="#FFFFFF",
-            background="#FFFFFF",
-            foreground=self.TEXT,
-            bordercolor=self.BORDER,
-            lightcolor=self.BORDER,
-            darkcolor=self.BORDER,
-            padding=8,
-            font=("Segoe UI", 10)
+        settings_dir = (
+            Path(app_data) /
+            "FragilX"
         )
 
-        # Botón secundario
-        style.configure(
-            "Secondary.TButton",
-            background=self.PRIMARY_LIGHT,
-            foreground=self.PRIMARY_DARK,
-            borderwidth=0,
-            padding=(14, 8),
-            font=("Segoe UI", 10, "bold")
+    else:
+
+        settings_dir = (
+            Path.home() /
+            ".fragil_x"
         )
 
-        style.map(
-            "Secondary.TButton",
-            background=[
-                ("active", "#DFD1EE"),
-                ("pressed", "#D5C5E5")
-            ]
-        )
+    settings_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-        # Botón principal
-        style.configure(
-            "Primary.TButton",
-            background=self.PRIMARY,
-            foreground="white",
-            borderwidth=0,
-            padding=(22, 12),
-            font=("Segoe UI", 11, "bold")
-        )
+    return settings_dir / "settings.json"
 
-        style.map(
-            "Primary.TButton",
-            background=[
-                ("active", self.PRIMARY_DARK),
-                ("pressed", self.PRIMARY_DARK),
-                ("disabled", "#C9BCD7")
-            ]
-        )
 
-    # =========================================================
-    # WIDGETS
-    # =========================================================
+SETTINGS_FILE = get_settings_file()
 
-    def create_widgets(self):
 
-        # -----------------------------------------------------
-        # CONTENEDOR PRINCIPAL
-        # -----------------------------------------------------
+def load_settings():
 
-        main = tk.Frame(
-            self.root,
-            bg=self.BG
-        )
+    if not SETTINGS_FILE.exists():
+        return {}
 
-        main.pack(
-            fill="both",
-            expand=True,
-            padx=35,
-            pady=25
-        )
+    try:
 
-        # -----------------------------------------------------
-        # ENCABEZADO
-        # -----------------------------------------------------
+        with open(
+            SETTINGS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
 
-        header = tk.Frame(
-            main,
-            bg=self.BG
-        )
+            return json.load(file)
 
-        header.pack(
-            fill="x",
-            pady=(0, 20)
-        )
+    except (json.JSONDecodeError, OSError):
 
-        # Ícono decorativo
-        icon = tk.Label(
-            header,
-            text="✦",
-            font=("Segoe UI", 24),
-            fg=self.PRIMARY,
-            bg=self.BG
-        )
+        return {}
 
-        icon.pack()
 
-        title = tk.Label(
-            header,
-            text="Generador de informes FMR1",
-            font=("Segoe UI", 21, "bold"),
-            fg=self.TEXT,
-            bg=self.BG
-        )
+def save_settings(
+    input_folder,
+    output_folder
+):
 
-        title.pack()
+    settings = {
+        "input_folder": input_folder,
+        "output_folder": output_folder
+    }
 
-        subtitle = tk.Label(
-            header,
-            text="Seleccioná las carpetas para generar los informes automáticamente",
-            font=("Segoe UI", 10),
-            fg=self.TEXT_SECONDARY,
-            bg=self.BG
-        )
+    try:
 
-        subtitle.pack(pady=(5, 0))
+        with open(
+            SETTINGS_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
 
-        # -----------------------------------------------------
-        # TARJETA
-        # -----------------------------------------------------
-
-        card = tk.Frame(
-            main,
-            bg=self.CARD,
-            highlightbackground=self.BORDER,
-            highlightthickness=1
-        )
-
-        card.pack(
-            fill="x",
-            padx=5
-        )
-
-        content = tk.Frame(
-            card,
-            bg=self.CARD
-        )
-
-        content.pack(
-            fill="x",
-            padx=25,
-            pady=22
-        )
-
-        # -----------------------------------------------------
-        # CARPETA DE REPORTES
-        # -----------------------------------------------------
-
-        self.create_folder_selector(
-            parent=content,
-            title="Carpeta de informes",
-            description="Seleccioná la carpeta donde están los archivos PDF.",
-            button_command=self.select_reports_folder,
-            entry_name="reports_entry"
-        )
-
-        # Separador
-        separator1 = tk.Frame(
-            content,
-            bg=self.BORDER,
-            height=1
-        )
-
-        separator1.pack(
-            fill="x",
-            pady=18
-        )
-
-        # -----------------------------------------------------
-        # CARPETA DE SALIDA
-        # -----------------------------------------------------
-
-        self.create_folder_selector(
-            parent=content,
-            title="Carpeta de salida",
-            description="Seleccioná dónde querés guardar los informes generados.",
-            button_command=self.select_output_folder,
-            entry_name="output_entry"
-        )
-
-        # -----------------------------------------------------
-        # BOTÓN GENERAR
-        # -----------------------------------------------------
-
-        self.generate_button = ttk.Button(
-            main,
-            text="✦  Generar informes",
-            command=self.generate_reports,
-            style="Primary.TButton"
-        )
-
-        self.generate_button.pack(
-            pady=(22, 12)
-        )
-
-        # -----------------------------------------------------
-        # ESTADO
-        # -----------------------------------------------------
-
-        status_frame = tk.Frame(
-            main,
-            bg=self.PRIMARY_LIGHT
-        )
-
-        status_frame.pack(
-            fill="x",
-            padx=5
-        )
-
-        self.status_label = tk.Label(
-            status_frame,
-            text="●  Listo para comenzar",
-            font=("Segoe UI", 9),
-            fg=self.PRIMARY_DARK,
-            bg=self.PRIMARY_LIGHT,
-            anchor="w"
-        )
-
-        self.status_label.pack(
-            padx=12,
-            pady=8
-        )
-
-    # =========================================================
-    # SELECTOR DE CARPETAS
-    # =========================================================
-
-    def create_folder_selector(
-        self,
-        parent,
-        title,
-        description,
-        button_command,
-        entry_name
-    ):
-
-        section = tk.Frame(
-            parent,
-            bg=self.CARD
-        )
-
-        section.pack(
-            fill="x"
-        )
-
-        # Título
-        title_label = tk.Label(
-            section,
-            text=title,
-            font=("Segoe UI", 11, "bold"),
-            fg=self.TEXT,
-            bg=self.CARD,
-            anchor="w"
-        )
-
-        title_label.pack(
-            anchor="w"
-        )
-
-        # Descripción
-        description_label = tk.Label(
-            section,
-            text=description,
-            font=("Segoe UI", 9),
-            fg=self.TEXT_SECONDARY,
-            bg=self.CARD,
-            anchor="w"
-        )
-
-        description_label.pack(
-            anchor="w",
-            pady=(2, 8)
-        )
-
-        # Fila
-        row = tk.Frame(
-            section,
-            bg=self.CARD
-        )
-
-        row.pack(
-            fill="x"
-        )
-
-        entry = ttk.Entry(
-            row,
-            style="Custom.TEntry"
-        )
-
-        entry.pack(
-            side="left",
-            fill="x",
-            expand=True
-        )
-
-        button = ttk.Button(
-            row,
-            text="Buscar",
-            command=button_command,
-            style="Secondary.TButton"
-        )
-
-        button.pack(
-            side="right",
-            padx=(10, 0)
-        )
-
-        setattr(
-            self,
-            entry_name,
-            entry
-        )
-
-    # =========================================================
-    # SELECCIONAR CARPETAS
-    # =========================================================
-
-    def select_reports_folder(self):
-
-        folder = filedialog.askdirectory(
-            title="Seleccionar carpeta de informes"
-        )
-
-        if folder:
-
-            self.reports_folder = Path(folder)
-
-            self.reports_entry.delete(
-                0,
-                tk.END
+            json.dump(
+                settings,
+                file,
+                indent=4
             )
 
-            self.reports_entry.insert(
-                0,
-                str(self.reports_folder)
-            )
+    except OSError:
 
-            self.status_label.config(
-                text="●  Carpeta de informes seleccionada"
-            )
+        pass
 
-    def select_output_folder(self):
 
-        folder = filedialog.askdirectory(
-            title="Seleccionar carpeta de salida"
-        )
+def safe_filename(name):
 
-        if folder:
+    # Quita caracteres que Windows no admite en nombres de archivo
+    return re.sub(r'[<>:"/\\|?*]', "", name).strip()
 
-            self.output_folder = Path(folder)
 
-            self.output_entry.delete(
-                0,
-                tk.END
-            )
+# ============================================================
+# Report generation
+# ============================================================
 
-            self.output_entry.insert(
-                0,
-                str(self.output_folder)
-            )
+def generate_reports(
+    input_folder,
+    output_folder,
+    on_progress
+):
+    """
+    Genera el informe (Word y PDF) de cada PDF de la carpeta.
+    Un PDF con problemas no detiene el resto del lote.
 
-            self.status_label.config(
-                text="●  Carpeta de salida seleccionada"
-            )
+    on_progress recibe (actual, total, nombre, error o None).
+    Devuelve (generados, [(nombre, error), ...]).
+    """
 
-    # =========================================================
-    # GENERAR INFORMES
-    # =========================================================
+    pdfs = sorted(
+        Path(input_folder).glob("*.pdf")
+    )
 
-    def generate_reports(self):
+    output_folder = Path(output_folder)
 
-        if not self.reports_folder:
+    output_folder.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-            messagebox.showwarning(
-                "Falta seleccionar carpeta",
-                "Seleccioná la carpeta donde se encuentran los informes PDF."
-            )
+    generated = 0
+    failed = []
 
-            return
+    # Una sola instancia de Word para todo el lote
+    with WordConverter() as converter:
 
-        if not self.output_folder:
+        for index, pdf in enumerate(pdfs, start=1):
 
-            messagebox.showwarning(
-                "Falta seleccionar carpeta",
-                "Seleccioná la carpeta donde se guardarán los informes."
-            )
-
-            return
-
-        if not TEMPLATE.exists():
-
-            messagebox.showerror(
-                "Error",
-                "No se encontró el template de informes."
-            )
-
-            return
-
-        pdfs = sorted(
-            self.reports_folder.glob("*.pdf")
-        )
-
-        if not pdfs:
-
-            messagebox.showwarning(
-                "Sin informes",
-                "No se encontraron archivos PDF en la carpeta seleccionada."
-            )
-
-            return
-
-        self.generate_button.config(
-            state="disabled"
-        )
-
-        try:
-
-            generated = 0
-
-            for pdf in pdfs:
-
-                self.status_label.config(
-                    text=f"●  Procesando: {pdf.name}"
-                )
-
-                self.root.update_idletasks()
+            try:
 
                 data = extract_data(pdf)
 
                 context = build_context(data)
 
                 output_file = (
-                    self.output_folder /
-                    f"{context['PROTOCOLO']} {context['PACIENTE']}.docx"
+                    output_folder /
+                    safe_filename(
+                        f"{context['PROTOCOLO']} {context['PACIENTE']} GENDA.docx"
+                    )
                 )
 
                 generate_report(
@@ -492,39 +170,577 @@ class App:
                     context
                 )
 
+                converter.convert(output_file)
+
                 generated += 1
 
-            self.status_label.config(
-                text=f"●  ¡Listo! {generated} informes generados"
+                error = None
+
+            except Exception as e:
+
+                error = str(e) or type(e).__name__
+
+                failed.append((pdf.name, error))
+
+            on_progress(
+                index,
+                len(pdfs),
+                pdf.name,
+                error
             )
 
-            messagebox.showinfo(
-                "Proceso finalizado",
-                f"Se generaron {generated} informes correctamente."
+    return generated, failed
+
+
+# ============================================================
+# Application
+# ============================================================
+
+class ReportApp(GendaApp):
+
+    def __init__(self):
+
+        super().__init__(
+            "FRAGIL X",
+            subtitle="Generación de informes",
+            size=(820, 780),
+            resizable=True,
+            app_id="GENDA.FragilX"
+        )
+
+        self.messages = queue.Queue()
+
+        self.input_folder = tk.StringVar()
+        self.output_folder = tk.StringVar()
+
+        self.load_saved_folders()
+
+        self.create_widgets()
+
+        self.after(
+            100,
+            self.poll_messages
+        )
+
+    # ========================================================
+    # Settings
+    # ========================================================
+
+    def load_saved_folders(self):
+
+        settings = load_settings()
+
+        input_folder = settings.get(
+            "input_folder",
+            ""
+        )
+
+        output_folder = settings.get(
+            "output_folder",
+            ""
+        )
+
+        if (
+            input_folder and
+            Path(input_folder).is_dir()
+        ):
+
+            self.input_folder.set(
+                input_folder
             )
 
-        except Exception as e:
+        if (
+            output_folder and
+            Path(output_folder).is_dir()
+        ):
 
-            self.status_label.config(
-                text="●  Ocurrió un error"
+            self.output_folder.set(
+                output_folder
             )
 
-            messagebox.showerror(
-                "Error",
-                f"Ocurrió un error durante el procesamiento:\n\n{e}"
+    def save_folders(self):
+
+        save_settings(
+            self.input_folder.get(),
+            self.output_folder.get()
+        )
+
+    # ========================================================
+    # Widgets
+    # ========================================================
+
+    def create_widgets(self):
+
+        # ----------------------------------------------------
+        # Folders
+        # ----------------------------------------------------
+
+        folders = card(self.body)
+
+        folders.pack(
+            fill="x"
+        )
+
+        FolderPicker(
+            folders,
+            "Carpeta de informes PDF",
+            self.input_folder,
+            dialog_title="Seleccionar carpeta de informes PDF",
+            on_change=self.save_folders
+        ).pack(
+            fill="x",
+            padx=20,
+            pady=(16, 12)
+        )
+
+        FolderPicker(
+            folders,
+            "Carpeta de salida",
+            self.output_folder,
+            dialog_title="Seleccionar carpeta de salida",
+            on_change=self.save_folders
+        ).pack(
+            fill="x",
+            padx=20,
+            pady=(0, 18)
+        )
+
+        # ----------------------------------------------------
+        # Generate button
+        # ----------------------------------------------------
+
+        self.generate_button = primary_button(
+            self.body,
+            "Generar informes",
+            self.start_generation,
+            width=240
+        )
+
+        self.generate_button.pack(
+            pady=(20, 14)
+        )
+
+        # ----------------------------------------------------
+        # Progress
+        # ----------------------------------------------------
+
+        self.progress = ctk.CTkProgressBar(
+            self.body,
+            height=10
+        )
+
+        self.progress.pack(
+            fill="x",
+            pady=(0, 6)
+        )
+
+        self.progress.set(0)
+
+        self.progress_label = ctk.CTkLabel(
+            self.body,
+            text="Listo",
+            font=font(12),
+            text_color=COLORS["muted"]
+        )
+
+        self.progress_label.pack(
+            pady=(0, 12)
+        )
+
+        # ----------------------------------------------------
+        # Open output button
+        # (packed before the status box so it always stays
+        # visible at the bottom)
+        # ----------------------------------------------------
+
+        self.open_output_button = secondary_button(
+            self.body,
+            "Abrir carpeta de salida",
+            self.open_output_folder,
+            width=220,
+            state="disabled"
+        )
+
+        self.open_output_button.pack(
+            side="bottom",
+            pady=(16, 0)
+        )
+
+        # ----------------------------------------------------
+        # Status
+        # ----------------------------------------------------
+
+        status = card(self.body)
+
+        status.pack(
+            fill="both",
+            expand=True
+        )
+
+        section_label(
+            status,
+            "Estado"
+        ).pack(
+            anchor="w",
+            padx=20,
+            pady=(14, 4)
+        )
+
+        self.status_box = StatusLog(
+            status
+        )
+
+        self.status_box.pack(
+            fill="both",
+            expand=True,
+            padx=20,
+            pady=(0, 16)
+        )
+
+    # ========================================================
+    # Open output folder
+    # ========================================================
+
+    def open_output_folder(self):
+
+        folder = self.output_folder.get()
+
+        if folder and Path(folder).is_dir():
+
+            os.startfile(folder)
+
+    # ========================================================
+    # Start generation
+    # ========================================================
+
+    def start_generation(self):
+
+        # Se leen los campos de texto: así también sirve una ruta
+        # escrita o pegada a mano, no solo la elegida con "Examinar"
+        input_folder = self.input_folder.get().strip()
+        output_folder = self.output_folder.get().strip()
+
+        if not input_folder:
+
+            self.show_status(
+                "Seleccione una carpeta de informes PDF.",
+                "warning"
             )
 
-        finally:
+            return
 
-            self.generate_button.config(
+        if not output_folder:
+
+            self.show_status(
+                "Seleccione una carpeta de salida.",
+                "warning"
+            )
+
+            return
+
+        if not Path(input_folder).is_dir():
+
+            self.show_status(
+                "La carpeta de informes PDF no existe.",
+                "error"
+            )
+
+            return
+
+        if not TEMPLATE.exists():
+
+            self.show_status(
+                "No se encontró el template de informes.",
+                "error"
+            )
+
+            return
+
+        if not any(Path(input_folder).glob("*.pdf")):
+
+            self.show_status(
+                "No se encontraron archivos PDF en la carpeta seleccionada.",
+                "warning"
+            )
+
+            return
+
+        self.save_folders()
+
+        self.status_box.clear()
+
+        self.open_output_button.configure(
+            state="disabled"
+        )
+
+        self.generate_button.configure(
+            state="disabled",
+            text="Generando…"
+        )
+
+        self.progress.set(0)
+
+        self.progress_label.configure(
+            text="Iniciando…"
+        )
+
+        thread = threading.Thread(
+            target=self.generate_reports_thread,
+            args=(
+                input_folder,
+                output_folder
+            ),
+            daemon=True
+        )
+
+        thread.start()
+
+    # ========================================================
+    # Report generation
+    # (runs in another thread: it only talks to the window
+    # through the queue)
+    # ========================================================
+
+    def generate_reports_thread(
+        self,
+        input_folder,
+        output_folder
+    ):
+
+        try:
+
+            generated, failed = generate_reports(
+                input_folder,
+                output_folder,
+                on_progress=lambda *args: self.messages.put(
+                    ("progress", args)
+                )
+            )
+
+        except Exception as error:
+
+            # Solo llega acá si no se pudo abrir Word
+            self.messages.put((
+                "fatal",
+                "No se pudo usar Microsoft Word para generar los PDF: "
+                f"{error}"
+            ))
+
+            return
+
+        self.messages.put(
+            ("done", (generated, failed))
+        )
+
+    def poll_messages(self):
+
+        try:
+
+            while True:
+
+                kind, value = self.messages.get_nowait()
+
+                if kind == "progress":
+
+                    self.update_progress(*value)
+
+                elif kind == "done":
+
+                    self.generation_finished(*value)
+
+                elif kind == "fatal":
+
+                    self.generation_failed(value)
+
+        except queue.Empty:
+
+            pass
+
+        self.after(
+            100,
+            self.poll_messages
+        )
+
+    # ========================================================
+    # Progress
+    # ========================================================
+
+    def update_progress(
+        self,
+        current,
+        total,
+        filename,
+        error
+    ):
+
+        self.progress.set(
+            current / total
+        )
+
+        self.progress_label.configure(
+            text=(
+                f"Procesado {current} de "
+                f"{total}: {filename}"
+            )
+        )
+
+        if error is None:
+
+            self.show_status(
+                f"✓ {filename}",
+                "success"
+            )
+
+        else:
+
+            self.show_status(
+                f"✗ {filename}",
+                "error"
+            )
+
+    # ========================================================
+    # Generation finished
+    # ========================================================
+
+    def generation_finished(
+        self,
+        generated,
+        failed
+    ):
+
+        self.progress.set(1)
+
+        # ----------------------------------------------------
+        # Summary
+        # ----------------------------------------------------
+
+        self.show_status("")
+        self.show_status(
+            "==============================",
+            "muted"
+        )
+
+        if not failed:
+
+            self.show_status(
+                "✓ GENERACIÓN COMPLETA",
+                "success"
+            )
+
+        else:
+
+            self.show_status(
+                "⚠ GENERACIÓN COMPLETA CON ERRORES",
+                "error"
+            )
+
+        self.show_status(
+            f"Informes procesados: {generated + len(failed)}"
+        )
+
+        self.show_status(
+            f"Generados (Word y PDF): {generated}"
+        )
+
+        self.show_status(
+            f"Errores: {len(failed)}"
+        )
+
+        self.show_status(
+            "==============================",
+            "muted"
+        )
+
+        # ----------------------------------------------------
+        # Detailed errors
+        # ----------------------------------------------------
+
+        if failed:
+
+            self.show_status(
+                "Estos PDF no se procesaron y hay que hacerlos a mano:",
+                "warning"
+            )
+
+        for name, reason in failed:
+
+            self.show_status(
+                f"✗ {name}\n"
+                f"  Error: {reason}",
+                "error"
+            )
+
+        # ----------------------------------------------------
+        # Final state
+        # ----------------------------------------------------
+
+        if not failed:
+
+            self.progress_label.configure(
+                text=(
+                    f"Completado — "
+                    f"{generated} informes generados"
+                )
+            )
+
+        else:
+
+            self.progress_label.configure(
+                text=(
+                    f"Completado con errores — "
+                    f"{generated} generados, "
+                    f"{len(failed)} con error"
+                )
+            )
+
+        self.reset_buttons(generated)
+
+    def generation_failed(self, message):
+
+        self.progress.set(0)
+
+        self.progress_label.configure(
+            text="Ocurrió un error"
+        )
+
+        self.show_status(
+            f"✗ {message}",
+            "error"
+        )
+
+        self.reset_buttons(0)
+
+    def reset_buttons(self, generated):
+
+        self.generate_button.configure(
+            state="normal",
+            text="Generar informes"
+        )
+
+        if generated > 0:
+
+            self.open_output_button.configure(
                 state="normal"
             )
 
+    # ========================================================
+    # Status
+    # ========================================================
+
+    def show_status(self, message, kind=None):
+
+        self.status_box.write(
+            message,
+            kind
+        )
+
+
+# ============================================================
+# Run application
+# ============================================================
 
 def run_app():
 
-    root = tk.Tk()
+    app = ReportApp()
 
-    app = App(root)
-
-    root.mainloop()
+    app.mainloop()
