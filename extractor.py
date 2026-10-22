@@ -16,6 +16,27 @@ def parse_patient(name):
     return name
 
 
+ALLELE_TYPES = (
+    "Normal",
+    "Intermediate",
+    "Premutation",
+    "Full mutation"
+)
+
+
+def find_allele_type(cells):
+
+    # devuelve el primer tipo conocido entre las celdas
+    for cell in cells:
+
+        for allele_type in ALLELE_TYPES:
+
+            if cell.lower() == allele_type.lower():
+                return allele_type
+
+    return ""
+
+
 def clean_cell(cell):
 
     if not cell:
@@ -86,10 +107,15 @@ def extract_data(pdf_path):
                     # PROTOCOLO
                     # =========================
 
-                    if "Clinic No.:" in text:
+                    # formato viejo: "Clinic No.:"
+                    # formato nuevo (V1.4): "Outpatient ID:"
+                    if (
+                        "Clinic No.:" in text
+                        or "Outpatient ID:" in text
+                    ):
 
                         m = re.search(
-                            r"Clinic No\.:\s*([A-Z]\d+)",
+                            r"(?:Clinic No\.|Outpatient ID):\s*([A-Z]\d+)",
                             text
                         )
 
@@ -120,10 +146,11 @@ def extract_data(pdf_path):
                             continue
 
 
-                        allele_type = ""
-
-                        if len(row) > 3:
-                            allele_type = row[3]
+                        # algunos PDFs traen columnas vacías extra,
+                        # así que se busca el tipo en las celdas siguientes
+                        allele_type = find_allele_type(
+                            row[3:]
+                        )
 
 
                         data["ALLELES"].append(
